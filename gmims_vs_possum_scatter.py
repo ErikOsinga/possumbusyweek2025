@@ -44,7 +44,7 @@ warnings.simplefilter("ignore", UnitsWarning)
 # ----------------------------
 
 def load_staps_map(fpath: Path) -> tuple[np.ndarray, WCS]:
-    """Load STAPS RM FITS image and return (2D data, celestial WCS)."""
+    """Load GMIMS RM FITS image and return (2D data, celestial WCS)."""
     with fits.open(fpath) as hdul:
         hdu = None
         for h in hdul:
@@ -146,7 +146,7 @@ def plot_scatter_rm(possum_rm: np.ndarray,
                     rm_lim: float | None = 100
 ) -> Path:
     """
-    Scatter RM_possum vs RM_staps with 1:1 line and best-fit line (y = a x + b).
+    Scatter RM_possum vs rm_gmims with 1:1 line and best-fit line (y = a x + b).
     Legend shows a, b. Pearson r and p-value shown as figure text.
     """
     m = np.isfinite(possum_rm) & np.isfinite(staps_rm)
@@ -186,9 +186,9 @@ def plot_scatter_rm(possum_rm: np.ndarray,
         ax.text(0.5, 0.5, "No finite data to plot", transform=ax.transAxes,
                 ha="center", va="center")
 
-    ax.set_xlabel("RM_staps (rad/m^2)")
+    ax.set_xlabel("rm_gmims (rad/m^2)")
     ax.set_ylabel("RM_possum (rad/m^2)")
-    ax.set_title("POSSUM vs STAPS RM (nearest STAPS pixel)")
+    ax.set_title("POSSUM vs GMIMS RM (nearest STAPS pixel)")
     if logscale:
         plt.yscale("symlog", linthresh=10.0)
     
@@ -197,7 +197,7 @@ def plot_scatter_rm(possum_rm: np.ndarray,
         plt.ylim(-rm_lim, rm_lim)
 
     fig.tight_layout()
-    outfile = outdir / (outname or "rm_possum_vs_rm_staps.png")
+    outfile = outdir / (outname or "rm_possum_vs_rm_gmims.png")
     fig.savefig(outfile, dpi=220)
     plt.close(fig)
     return outfile
@@ -212,7 +212,7 @@ def plot_residual_vs_distance(possum_rm: np.ndarray,
                               rm_lim: float = 100
 ) -> Path:
     """
-    Scatter of (RM_possum - RM_staps) vs distance to reference.
+    Scatter of (RM_possum - rm_gmims) vs distance to reference.
     """
     m = np.isfinite(possum_rm) & np.isfinite(staps_rm) & np.isfinite(distances)
     res = possum_rm[m] - staps_rm[m]
@@ -223,7 +223,7 @@ def plot_residual_vs_distance(possum_rm: np.ndarray,
     ax.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.7)
 
     ax.set_xlabel(f"Angular distance to reference ({unit_label})")
-    ax.set_ylabel("RM_possum - RM_staps (rad/m^2)")
+    ax.set_ylabel("RM_possum - rm_gmims (rad/m^2)")
     ax.set_title("Residual RM vs distance to reference")
 
     fig.tight_layout()
@@ -248,7 +248,7 @@ def plot_residual_vs_b(possum_rm: np.ndarray,
                        rm_lim: float = 100,
 ) -> Path:
     """
-    Scatter of (RM_possum - RM_staps) vs Galactic latitude b (deg).
+    Scatter of (RM_possum - rm_gmims) vs Galactic latitude b (deg).
     """
     m = np.isfinite(possum_rm) & np.isfinite(staps_rm) & np.isfinite(b_deg)
     res = possum_rm[m] - staps_rm[m]
@@ -260,7 +260,7 @@ def plot_residual_vs_b(possum_rm: np.ndarray,
     # ax.axvline(0.0, color="k", linestyle=":", linewidth=1.0, alpha=0.5)
 
     ax.set_xlabel("Galactic latitude b (deg)")
-    ax.set_ylabel("RM_possum - RM_staps (rad/m^2)")
+    ax.set_ylabel("RM_possum - rm_gmims (rad/m^2)")
     ax.set_title("Residual RM vs Galactic latitude")
 
     plt.ylim(-rm_lim, rm_lim)
@@ -286,9 +286,9 @@ def select_sources_within_radius(sky: SkyCoord, ref: SkyCoord, radius_deg: float
 # ----------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Compare POSSUM RMs with STAPS RM map.")
+    p = argparse.ArgumentParser(description="Compare POSSUM RMs with GMIMS RM map.")
     p.add_argument("--staps-fits", type=Path, required=True,
-                   help="Path to STAPS RM FITS image.")
+                   help="Path to GMIMS RM FITS image.")
     p.add_argument("--possum-catalog", type=Path, required=True,
                    help="Path to POSSUM catalog (FITS/ECSV/CSV/etc.).")
 
@@ -364,13 +364,13 @@ def main() -> None:
     # Write a table with results for possible further analysis
     if ref is not None and args.radius_deg is not None:
         possum_subtable = possum[sel]
-        possum_subtable['rm_staps'] = staps_rm
-        outtable_path = outdir / f"possum_staps_comparison_within_{args.radius_deg:.2f}deg.fits"
+        possum_subtable['rm_gmims'] = staps_rm
+        outtable_path = outdir / f"possum_gmims_comparison_within_{args.radius_deg:.2f}deg.fits"
         possum_subtable.write(outtable_path, overwrite=True)
         print(f"Wrote comparison table for selected sources to: {outtable_path}")
 
 
-    # Plot 1: RM_possum vs RM_staps
+    # Plot 1: RM_possum vs rm_gmims
     scatter_file = plot_scatter_rm(possum_rm, staps_rm, outdir, outname=args.scatter_out, logscale=args.logscale, rm_lim=args.rmlim)
     print(f"Saved scatter: {scatter_file}")
 
