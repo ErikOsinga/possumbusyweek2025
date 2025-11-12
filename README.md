@@ -11,3 +11,9 @@ python rmcat_vs_staps.py --possum-catalog ./possum_1dpipeline_full_goodpol.fits 
 
 or if you omit the `ra`, `dec`, `imwidth-deg` parameters, you can visualise the full sky. 
 
+
+You can also create RM vs RM scatter plots with 
+
+```
+python staps_possum_compare.py --staps-fits /home/osingae/Documents/postdoc-no-onedrive/doradogroup/other_wavelengths/RMp.fits --possum-catalog ./possum_1dpipeline_full_goodpol.fits --ra 65.005 --dec -54.9379 --radius-deg 3 --rmlim 100
+```
