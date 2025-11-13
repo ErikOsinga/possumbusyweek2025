@@ -77,6 +77,38 @@ def make_plots_dir() -> Path:
     outdir.mkdir(parents=True, exist_ok=True)
     return outdir
 
+def load_m2_map(fpath: Path) -> tuple[np.ndarray, WCS]:
+    """
+    Load GMIMS 'second moment' map (m2 [rad/m^2]) and return (2D data, celestial WCS).
+    """
+    with fits.open(fpath) as hdul:
+        hdu = None
+        for h in hdul:
+            if hasattr(h, "data") and h.data is not None and h.data.ndim >= 2:
+                hdu = h
+                break
+        if hdu is None:
+            raise ValueError("No 2D image HDU found in m2 FITS.")
+        data = np.squeeze(hdu.data)
+        wcs = WCS(hdu.header).celestial
+    if data.ndim != 2:
+        raise ValueError("m2 image is not 2D after squeeze; check FITS file.")
+    return data, wcs
+
+
+def sample_map_at_sky(wcs: WCS, image: np.ndarray, sky: SkyCoord) -> np.ndarray:
+    """
+    Nearest-pixel sampling of 'image' at positions 'sky' (ICRS).
+    Returns array of sampled values with NaN for out-of-bounds.
+    """
+    x, y = wcs.world_to_pixel(sky)
+    xi = np.rint(x).astype(int)
+    yi = np.rint(y).astype(int)
+    h, w = image.shape
+    inside = (xi >= 0) & (xi < w) & (yi >= 0) & (yi < h)
+    vals = np.full(xi.shape, np.nan, dtype=float)
+    vals[inside] = image[yi[inside], xi[inside]]
+    return vals
 
 # ----------------------------
 # Core calculations
@@ -169,7 +201,12 @@ def plot_scatter_rm(possum_rm: np.ndarray,
                     logscale: bool = False,
                     rm_lim: float | None = 100,
                     inlier_low_pct: float = 10.0,
-                    inlier_high_pct: float = 90.0
+                    inlier_high_pct: float = 90.0,
+                    color_by: np.ndarray | None = None,
+                    color_label: str = "m2 (rad/m^2)",
+                    color_vmin: float | None = None,
+                    color_vmax: float | None = None,
+                    color_cmap: str = "viridis"
 ) -> Path:
     """
     Top panel: RM_possum vs rm_gmims (inliers only fit; outliers in C1).
@@ -179,6 +216,7 @@ def plot_scatter_rm(possum_rm: np.ndarray,
     mfin = np.isfinite(possum_rm) & np.isfinite(gmims_rm)
     x_all = gmims_rm[mfin]
     y_all = possum_rm[mfin]
+    c_all = None if color_by is None else np.asarray(color_by)[mfin]
 
     print(f"Plotting scatter with {x_all.size} points.")
 
@@ -194,11 +232,23 @@ def plot_scatter_rm(possum_rm: np.ndarray,
         )
         outlier = ~inlier
 
-        # Top: scatter
-        ax.scatter(x_all[inlier], y_all[inlier], s=12, alpha=0.85, edgecolor="none",
-                   label=f"Inliers ({inlier_low_pct}-{inlier_high_pct} pct)")
-        ax.scatter(x_all[outlier], y_all[outlier], s=12, alpha=0.6, edgecolor="none",
-                   label="Outliers", color="C1")
+        if color_by is None:
+            ax.scatter(x_all[inlier], y_all[inlier], s=12, alpha=0.85, edgecolor="none",
+                    label=f"Inliers ({inlier_low_pct}-{inlier_high_pct} pct)")
+            ax.scatter(x_all[outlier], y_all[outlier], s=12, alpha=0.6, edgecolor="none",
+                    label="Outliers", color="C1")
+        else:
+            sc = ax.scatter(x_all[inlier], y_all[inlier], s=12, alpha=0.9, edgecolor="none",
+                            c=c_all[inlier], # type:ignore
+                            cmap=color_cmap, vmin=color_vmin, vmax=color_vmax,
+                            label=f"Inliers ({inlier_low_pct}-{inlier_high_pct} pct)")
+            ax.scatter(x_all[outlier], y_all[outlier], s=12, alpha=0.8,
+                    c=c_all[outlier], # type: ignore
+                    cmap=color_cmap, vmin=color_vmin, vmax=color_vmax,
+                    edgecolor="k", linewidth=0.4, label="Outliers")
+            cb = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+            cb.set_label(color_label)
+
 
         # 1:1 line spanned by x-percentiles
         lo_x, hi_x = np.nanpercentile(x_all, [inlier_low_pct, inlier_high_pct])
@@ -228,13 +278,16 @@ def plot_scatter_rm(possum_rm: np.ndarray,
             dof = max(int(resid.size) - 2, 0)
             chi2_red = reduced_chi2(resid, dof)
 
-            ax_resid.scatter(x_all[inlier], resid, s=12, alpha=0.85, edgecolor="none")
-            ax_resid.axhline(0.0, linestyle="--", linewidth=1.0, alpha=0.7, color="k")
-            ax_resid.text(0.98, 0.98,
-                          f"Reduced chi2 = {chi2_red:.3f}\nN in = {resid.size}, dof = {dof}",
-                          transform=ax_resid.transAxes, ha="right", va="top",
-                          fontsize=10,
-                          bbox=dict(facecolor="white", edgecolor="none", alpha=0.6))
+            if color_by is None:
+                ax_resid.scatter(x_all[inlier], resid, s=12, alpha=0.85, edgecolor="none")
+            else:
+                sc2 = ax_resid.scatter(x_all[inlier], resid, s=12, alpha=0.9, edgecolor="none",
+                                    c=c_all[inlier], # type: ignore
+                                    cmap=color_cmap,
+                                    vmin=color_vmin, vmax=color_vmax)
+                # can comment to add a second colorbar below
+                cb2 = plt.colorbar(sc2, ax=ax_resid, fraction=0.046, pad=0.04)
+                cb2.set_label(color_label)
         else:
             ax.legend(loc="upper left", frameon=True)
             ax.text(0.02, 0.02, "Not enough inliers for fit",
@@ -256,20 +309,59 @@ def plot_scatter_rm(possum_rm: np.ndarray,
         ax.set_yscale("symlog", linthresh=10.0)
     if rm_lim is not None:
         ax.set_ylim(-rm_lim, rm_lim)
+        ax_resid.set_ylim(-rm_lim, rm_lim)
     ax.grid(True)
 
     ax_resid.set_xlabel("rm_gmims (rad/m^2)")
     ax_resid.set_ylabel("Residual: RM_possum - (a x + b) (rad/m^2)")
     ax_resid.set_title("Residuals (inliers only)")
+    ax_resid.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.7)
     ax_resid.grid(True)
 
     fig.tight_layout()
     outfile = outdir / (outname or "rm_possum_vs_rm_gmims.png")
     fig.savefig(outfile, dpi=220)
     plt.close(fig)
+
+    if color_by is not None:
+        plot_residual_squared_vs_color(resid, c_all[inlier], color_label, outdir, rm_lim) # type: ignore
+
     return outfile
 
 
+def plot_residual_squared_vs_color(residuals: np.ndarray,
+                                    color_by: np.ndarray,
+                                    color_label: str,
+                                    outdir: Path,
+                                    rm_lim: float | None = 100,
+                                    outname: str | None = None
+) -> Path:
+    """
+    Scatter of residual^2 vs color_by values.
+    """
+    if color_by is None:
+        raise ValueError("color_by cannot be None for this plot.")
+
+    m = np.isfinite(residuals) & np.isfinite(color_by)
+    res_squared = residuals[m] ** 2
+    c = color_by[m]
+
+    fig, ax = plt.subplots(figsize=(6.8, 6.0))
+    ax.scatter(c, res_squared, s=12, alpha=0.8, edgecolor="none")
+    ax.set_xlabel(color_label)
+    ax.set_ylabel("Residual^2 (rad/m^4)")
+    ax.set_title("Residual^2 vs 'complexity'")
+    if rm_lim is not None:
+        ax.set_ylim(-5, rm_lim**2)
+    else:
+        plt.yscale('log')
+    plt.grid()
+
+    fig.tight_layout()
+    outfile = outdir / (outname or "residual_squared_vs_complexity.png")
+    fig.savefig(outfile, dpi=220)
+    plt.close(fig)
+    return outfile
 
 
 def plot_residual_vs_distance(possum_rm: np.ndarray,
@@ -388,7 +480,17 @@ def parse_args() -> argparse.Namespace:
                    help="Upper percentile for inlier selection in scatter plot (default: 90.0).")
     p.add_argument("--inlier-low-pct", type=float, default=10.0,
                      help="Lower percentile for inlier selection in scatter plot (default: 10.0).")
-    
+
+
+    p.add_argument("--m2-fits", type=Path,
+                help="Path to 2D FITS of GMIMS second moment (units: m2 [rad/m^2]).")
+    p.add_argument("--m2-vmin", type=float, default=None,
+                help="Lower bound for m2 colormap.")
+    p.add_argument("--m2-vmax", type=float, default=None,
+                help="Upper bound for m2 colormap.")
+    p.add_argument("--m2-cmap", type=str, default="viridis",
+                help="Matplotlib colormap for m2 coloring (default: viridis).")
+
 
     # Optional output name suffixes
     p.add_argument("--scatter-out", type=str, default=None,
@@ -436,6 +538,11 @@ def main() -> None:
     # Match to nearest STAPS pixel
     gmims_rm, x_pix, y_pix = nearest_pixel_values(wcs, image, sky)
 
+    m2_vals = None
+    if args.m2_fits is not None:
+        m2_image, m2_wcs = load_m2_map(args.m2_fits)
+        m2_vals = sample_map_at_sky(m2_wcs, m2_image, sky)  # same sky as used for staps/gmims matching
+
     # Write a table with results for possible further analysis
     if ref is not None and args.radius_deg is not None:
         possum_subtable = possum[sel]
@@ -446,11 +553,20 @@ def main() -> None:
 
 
     # Plot 1: RM_possum vs rm_gmims
-    scatter_file = plot_scatter_rm(possum_rm, gmims_rm, outdir, outname=args.scatter_out,
+    scatter_file = plot_scatter_rm(
+        possum_rm=possum_rm,
+        gmims_rm=gmims_rm,
+        outdir=outdir,
+        outname=args.scatter_out,
         logscale=args.logscale,
         rm_lim=args.rmlim,
         inlier_low_pct=args.inlier_low_pct,
-        inlier_high_pct=args.inlier_high_pct
+        inlier_high_pct=args.inlier_high_pct,
+        color_by=m2_vals,
+        color_label="GMIMS clean component second moment m2 (rad/m^2)",
+        color_vmin=args.m2_vmin,
+        color_vmax=args.m2_vmax,
+        color_cmap=args.m2_cmap,
     )
     print(f"Saved scatter: {scatter_file}")
 
@@ -471,6 +587,9 @@ def main() -> None:
     b_file = plot_residual_vs_b(possum_rm, gmims_rm, b_deg,
                                 outdir=outdir, outname=args.b_resid_out, rm_lim=args.rmlim)
     print(f"Saved residual vs b: {b_file}")
+    print("=============================")
+    print("=============================")
+    print("")
 
 
 if __name__ == "__main__":
