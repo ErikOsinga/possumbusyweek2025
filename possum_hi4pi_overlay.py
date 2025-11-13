@@ -224,9 +224,16 @@ def make_overlay_plot(cutout: np.ndarray, w: WCS, tbl: Table, hi_hdr: fits.Heade
     fig = plt.figure(figsize=(7.2, 6.6))
     ax = fig.add_subplot(111, projection=w)
 
-    im = ax.imshow(cutout, origin="lower", vmin=hi_vmin, vmax=hi_vmax, cmap="gray")
-    cbar_hi = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar_hi.set_label(f"HI ({hi_unit})")
+    log10 = True
+
+    if log10:
+        im = ax.imshow(np.log10(cutout), origin="lower", vmin=np.log10(hi_vmin), vmax=np.log10(hi_vmax), cmap="gray_r")
+        cbar_hi = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar_hi.set_label(f"log10( HI ({hi_unit}))")
+    else:
+        im = ax.imshow(cutout, origin="lower", vmin=hi_vmin, vmax=hi_vmax, cmap="gray_r")
+        cbar_hi = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar_hi.set_label(f"HI ({hi_unit})")
 
     # Overlay POSSUM points, colored by RM
     sc = ax.scatter(tbl["ra"], tbl["dec"], c=tbl["rm"], s=18, cmap="coolwarm",
@@ -252,7 +259,7 @@ def make_overlay_plot(cutout: np.ndarray, w: WCS, tbl: Table, hi_hdr: fits.Heade
 
     # Add a compact text box listing group members inside the cutout, if provided
     # Draw group member rectangles if provided
-    if objects_in_field is not None and len(objects_in_field) > 0:
+    if objects_in_field is not None and len(objects_in_field) > 0: # type: ignore
         draw_object_rectangles(ax, w, objects_in_field, box_size_arcmin)
 
 
@@ -262,7 +269,7 @@ def make_overlay_plot(cutout: np.ndarray, w: WCS, tbl: Table, hi_hdr: fits.Heade
     plt.close(fig)
 
 
-def make_scatter_plot(tbl: Table, out_png: Path) -> None:
+def make_scatter_plot(tbl: Table, out_png: Path, vmin=None, vmax=None) -> None:
     """
     Scatter of RM vs HI (nearest native pixel).
     """
@@ -276,6 +283,12 @@ def make_scatter_plot(tbl: Table, out_png: Path) -> None:
     ax.set_xlabel("RM (rad m^-2)")
     ax.set_ylabel("HI (nearest native pixel)")
     ax.set_title("POSSUM RM vs HI")
+    if vmin is not None: 
+        ax.set_xlim(left=vmin)
+    if vmax is not None:
+        ax.set_xlim(right=vmax)
+    
+    plt.yscale('log')
     fig.tight_layout()
     fig.savefig(out_png, dpi=180)
     plt.close(fig)
@@ -394,7 +407,7 @@ def main() -> None:
     tbl_scatter = tbl.copy()
     if "hi_nearest" not in tbl_scatter.colnames:
         tbl_scatter.add_column(Column(hi_at_sources, name="hi_nearest"))
-    make_scatter_plot(tbl_scatter, scatter_png)
+    make_scatter_plot(tbl_scatter, scatter_png, vmin=args.rm_vmin, vmax=args.rm_vmax)
 
     print(f"Saved overlay plot: {overlay_png}")
     print(f"Saved scatter plot: {scatter_png}")

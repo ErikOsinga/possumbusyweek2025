@@ -7,7 +7,7 @@ python possum_hi4pi_overlay.py \
   --possum-catalog $mycatalog\
   --ra 65.005 --dec -54.9379 --imwidth-deg 9 \
   --npix 800 \
-  --hi-vmin 6.2e19 --hi-vmax 1.2e20 \
+  --hi-vmin 6e19 --hi-vmax 3e20 \
   --rm-vmin -50 --rm-vmax 50 \
   --overlay-png ./plotsHI/possum_hi4pi_overlay.png \
   --scatter-png ./plotsHI/possum_hi4pi_scatter.png \
