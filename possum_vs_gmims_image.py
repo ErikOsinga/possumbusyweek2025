@@ -40,6 +40,11 @@ warnings.simplefilter("ignore", FITSFixedWarning)
 warnings.simplefilter("ignore", UnitsWarning)
 
 
+L_DORADO = 	264.3103
+B_DORADO = -43.3928
+RA_DORADO = 65.0025000
+DEC_DORADO = -54.9380556
+
 
 # ----------------------------
 # I/O and data prep utilities
@@ -131,6 +136,87 @@ def scatter_possum(ax: plt.Axes,
     # Add a small colorbar for points if desired (kept single shared bar via imshow)
     # Could be enabled by user, but we keep the image colorbar only to avoid duplicates.
 
+def sample_staps_rm_at_possum(
+    img: np.ndarray,
+    wcs: WCS,
+    possum: Table,
+    ra_col: str,
+    dec_col: str,
+    rm_col: str,
+) -> tuple[np.ndarray, np.ndarray, SkyCoord]:
+    """
+    For each POSSUM source, sample the STAPS RM map at the nearest pixel.
+
+    Returns:
+      rm_possum: RM from POSSUM (float array)
+      rm_staps:  RM from STAPS at same positions (float array, NaN if out-of-bounds)
+      sky_icrs:  SkyCoord of POSSUM positions (ICRS)
+    """
+    ra = np.asarray(possum[ra_col], dtype=float)
+    dec = np.asarray(possum[dec_col], dtype=float)
+    rm_possum = np.asarray(possum[rm_col], dtype=float)
+
+    sky_icrs = SkyCoord(ra * u.deg, dec * u.deg, frame="icrs")
+
+    x, y = wcs.world_to_pixel(sky_icrs)
+    xi = np.rint(x).astype(int)
+    yi = np.rint(y).astype(int)
+
+    ny, nx = img.shape
+    inside = (xi >= 0) & (xi < nx) & (yi >= 0) & (yi < ny)
+
+    rm_staps = np.full_like(rm_possum, np.nan, dtype=float)
+    rm_staps[inside] = img[yi[inside], xi[inside]]
+
+    return rm_possum, rm_staps, sky_icrs
+
+
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+from astropy.wcs import WCS
+from astropy.table import Table
+
+
+def sample_staps_rm_at_possum(
+    img: np.ndarray,
+    wcs: WCS,
+    possum: Table,
+    ra_col: str,
+    dec_col: str,
+    rm_col: str,
+) -> tuple[np.ndarray, np.ndarray, SkyCoord]:
+    """
+    For each POSSUM source, sample the STAPS RM map at the nearest pixel.
+
+    Returns:
+      rm_possum: RM from POSSUM (float array)
+      rm_staps:  RM from STAPS at same positions (float array, NaN if out-of-bounds)
+      sky_icrs:  SkyCoord of POSSUM positions (ICRS)
+    """
+    ra = np.asarray(possum[ra_col], dtype=float)
+    dec = np.asarray(possum[dec_col], dtype=float)
+    rm_possum = np.asarray(possum[rm_col], dtype=float)
+
+    sky_icrs = SkyCoord(ra * u.deg, dec * u.deg, frame="icrs")
+
+    x, y = wcs.world_to_pixel(sky_icrs)
+    xi = np.rint(x).astype(int)
+    yi = np.rint(y).astype(int)
+
+    ny, nx = img.shape
+    inside = (xi >= 0) & (xi < nx) & (yi >= 0) & (yi < ny)
+
+    rm_staps = np.full_like(rm_possum, np.nan, dtype=float)
+    rm_staps[inside] = img[yi[inside], xi[inside]]
+
+    return rm_possum, rm_staps, sky_icrs
+
 
 def plot_allsky(staps_path: Path,
                 possum_path: Path,
@@ -139,27 +225,194 @@ def plot_allsky(staps_path: Path,
                 ra_col: str,
                 dec_col: str,
                 rm_col: str,
-                outname: str | None = None) -> Path:
-    """Create all-sky overlay figure."""
+                outname: Optional[str] = None) -> Path:
+    """
+    Create two all-sky figures.
+
+    Figure 1 (RA/Dec coordinates):
+      Left:  STAPS diffuse RM with POSSUM points colored by RM_possum.
+      Right: XRM = RM_possum / RM_staps (nearest STAPS pixel) in RA/Dec.
+
+    Figure 2 (Galactic coordinates):
+      Left:  POSSUM RM_possum in Galactic (l, b).
+      Right: XRM = RM_possum / RM_staps in Galactic (l, b).
+
+    Returns the path to the RA/Dec figure. The Galactic figure is saved
+    with a '_galactic' suffix in the same directory.
+    """
     img, wcs, _ = load_staps_map(staps_path)
+    img_gal, wcs_gal, _ = load_staps_map(staps_path.parent / (staps_path.stem + "_galactic.fits"))
     possum = load_possum_catalog(possum_path, ra_col, dec_col, rm_col)
 
-    fig = plt.figure(figsize=(10, 6))
-    ax = plt.subplot(projection=wcs)
+    # Sample STAPS RM at POSSUM locations and compute XRM
+    rm_possum, rm_staps, sky_icrs = sample_staps_rm_at_possum(
+        img=img,
+        wcs=wcs,
+        possum=possum,
+        ra_col=ra_col,
+        dec_col=dec_col,
+        rm_col=rm_col,
+    )
 
-    imshow_rm(ax, img, wcs, vmin=vmin, vmax=vmax)
-    scatter_possum(ax, possum, vmin=vmin, vmax=vmax,
-                   ra_col=ra_col, dec_col=dec_col, rm_col=rm_col)
+    # Avoid divide-by-zero and NaNs for the ratio
+    good_ratio = np.isfinite(rm_possum) & np.isfinite(rm_staps) & (rm_staps != 0.0)
+    xrm = np.full_like(rm_possum, np.nan, dtype=float)
+    xrm[good_ratio] = rm_possum[good_ratio] / rm_staps[good_ratio]
 
-    ax.set_title("STAPS RM + POSSUM RM overlay (all-sky)")
+    # RA/Dec figure (both panels in RA/Dec / native WCS)
     outdir = make_plots_dir()
     if outname is None:
-        outname = "staps_possum_allsky.png"
-    outfile = outdir / outname
-    fig.tight_layout()
-    fig.savefig(outfile, dpi=200)
-    plt.close(fig)
-    return outfile
+        base_name = "staps_possum_allsky"
+    else:
+        base_name = outname.rsplit(".png", 1)[0]
+
+    fig1 = plt.figure(figsize=(12, 5))
+
+    ############## MARKER SIZE AND ALPHA #########################################################################################
+    markersize = 0.1
+    alpha = 1.0
+    ############## MARKER SIZE AND ALPHA #########################################################################################
+
+    # Left panel: original STAPS + POSSUM overlay in native WCS (RA/Dec)
+    ax1 = fig1.add_subplot(1, 2, 1, projection=wcs)
+    imshow_rm(ax1, img, wcs, vmin=vmin, vmax=vmax)
+    scatter_possum(ax1, possum, vmin=vmin, vmax=vmax,
+                   ra_col=ra_col, dec_col=dec_col, rm_col=rm_col,
+                   size=markersize, alpha=alpha
+    )
+    ax1.set_title("STAPS RM + POSSUM RM (RA-Dec)")
+    # ax1.scatter(RA_DORADO, DEC_DORADO, marker='x', s=5, color='k',alpha=0.5,
+    #             transform=ax1.get_transform("world"), # type:ignore
+    # )
+    circle = plt.Circle((RA_DORADO, DEC_DORADO), 3.0, fill=False, edgecolor='k', 
+                        linewidth=1, linestyle='--', alpha=1.0,
+                        transform=ax1.get_transform("world"))
+    ax1.add_patch(circle)
+    print(f"Plotting Dorado at {RA_DORADO=}, {DEC_DORADO=}")
+
+    # Right panel: XRM in RA/Dec using the same WCS projection
+    ax2 = fig1.add_subplot(1, 2, 2, projection=wcs)
+    ax2.set_aspect('equal')
+
+    m_xrm = np.isfinite(xrm)
+    if np.count_nonzero(m_xrm) > 0:
+        xrm_good = xrm[m_xrm]
+        # Robust color stretch for XRM
+        xrm_lo, xrm_hi = np.nanpercentile(xrm_good, [5, 95])
+        xrm_lo, xrm_hi = -2, 2
+        sc2 = ax2.scatter(
+            sky_icrs.ra.deg[m_xrm],
+            sky_icrs.dec.deg[m_xrm],
+            s=markersize,
+            c=xrm_good,
+            cmap="rainbow",
+            vmin=xrm_lo,
+            vmax=xrm_hi,
+            alpha=alpha,
+            transform=ax2.get_transform("world"),
+        )
+        cb2 = plt.colorbar(sc2, ax=ax2, fraction=0.046, pad=0.04)
+        cb2.set_label("XRM = RM_possum / RM_staps")
+
+        # also plot dorado
+        circle = plt.Circle((RA_DORADO, DEC_DORADO), 3.0, fill=False, edgecolor='k', 
+                            linewidth=1, linestyle='--', alpha=1.0,
+                            transform=ax2.get_transform("world"))
+        ax2.add_patch(circle)
+
+    else:
+        ax2.text(0.5, 0.5, "No valid XRM values",
+                 ha="center", va="center", transform=ax2.transAxes)
+
+    ax2.set_xlabel("RA")
+    ax2.set_ylabel("Dec")
+    ax2.set_title("XRM (RA-Dec)")
+    ax2.grid(True, linestyle=":", alpha=0.5)
+
+    fig1.tight_layout()
+    outfile_radec = outdir / f"{base_name}_radec.png"
+    fig1.savefig(outfile_radec, dpi=200)
+    plt.close(fig1)
+
+    # Galactic figure (both panels in Galactic l, b, Mollweide)
+    sky_gal = sky_icrs.galactic
+    l_rad = sky_gal.l.wrap_at(180.0 * u.deg).radian
+    b_rad = sky_gal.b.radian
+
+    fig2 = plt.figure(figsize=(12, 5))
+
+    # Left: POSSUM RM in Galactic coordinates
+    ax1g = fig2.add_subplot(1, 2, 1, projection="mollweide")
+    # imshow_rm(ax1g, img_gal, wcs_gal, vmin=vmin, vmax=vmax)
+
+    m_rm = np.isfinite(rm_possum)
+    if np.count_nonzero(m_rm) > 0:
+        rm_good = rm_possum[m_rm]
+        sc1g = ax1g.scatter(
+            l_rad[m_rm],
+            b_rad[m_rm],
+            s=markersize,
+            c=rm_good,
+            cmap="RdBu_r",
+            vmin=vmin,
+            vmax=vmax,
+            alpha=alpha,
+        )
+        cb1g = plt.colorbar(sc1g, ax=ax1g, orientation="horizontal",
+                            pad=0.1, fraction=0.05)
+        cb1g.set_label("RM_possum (rad/m^2)")
+    else:
+        ax1g.text(0.0, 0.0, "No POSSUM RM values",
+                  ha="center", va="center", transform=ax1g.transAxes)
+
+    ax1g.grid(True, linestyle=":", alpha=0.5)
+    ax1g.set_xlabel("Galactic longitude l")
+    ax1g.set_ylabel("Galactic latitude b")
+    ax1g.set_title("POSSUM RM (Galactic)")
+
+    # Right: XRM in Galactic coordinates
+    ax2g = fig2.add_subplot(1, 2, 2, projection="mollweide")
+    m_xrm = np.isfinite(xrm)
+    if np.count_nonzero(m_xrm) > 0:
+        xrm_good = xrm[m_xrm]
+        xrm_lo, xrm_hi = np.nanpercentile(xrm_good, [5, 95])
+        xrm_lo, xrm_hi = -2, 2
+        sc2g = ax2g.scatter(
+            l_rad[m_xrm],
+            b_rad[m_xrm],
+            s=markersize,
+            c=xrm_good,
+            cmap="rainbow",
+            vmin=xrm_lo,
+            vmax=xrm_hi,
+            alpha=alpha,
+        )
+        cb2g = plt.colorbar(sc2g, ax=ax2g, orientation="horizontal",
+                            pad=0.1, fraction=0.05)
+        cb2g.set_label("XRM = RM_possum / RM_staps")
+    else:
+        ax2g.text(0.0, 0.0, "No valid XRM values",
+                  ha="center", va="center", transform=ax2g.transAxes)
+
+    ax2g.grid(True, linestyle=":", alpha=0.5)
+    ax2g.set_xlabel("Galactic longitude l")
+    ax2g.set_ylabel("Galactic latitude b")
+    ax2g.set_title("XRM (Galactic)")
+
+    print(f"Plotting Dorado at {L_DORADO-360=}, {B_DORADO=}")
+    ax1g.scatter(np.radians(L_DORADO-360), np.radians(B_DORADO), marker='x', color='k', s=10)
+    ax2g.scatter(np.radians(L_DORADO-360), np.radians(B_DORADO), marker='x', color='k', s=10,alpha=0.5)
+
+    fig2.tight_layout()
+    outfile_gal = outdir / f"{base_name}_galactic.png"
+    fig2.savefig(outfile_gal, dpi=200)
+    plt.close(fig2)
+
+    print(f"Saved RA/Dec all-sky figure to: {outfile_radec}")
+    print(f"Saved Galactic all-sky figure to: {outfile_gal}")
+
+    # Preserve original return type: return the RA/Dec figure path
+    return outfile_radec
 
 
 def plot_cutout(staps_path: Path,
@@ -186,6 +439,8 @@ def plot_cutout(staps_path: Path,
     fig = plt.figure(figsize=(6.5, 6.5))
     ax = plt.subplot(projection=cutout.wcs)
 
+    print("Background statistics for cutout:")
+    print(f"min={np.nanmin(cutout.data):.2f}, max={np.nanmax(cutout.data):.2f}, mean={np.nanmean(cutout.data):.2f}, median={np.nanmedian(cutout.data):.2f} rad/m^2")
     imshow_rm(ax, cutout.data, cutout.wcs, vmin=vmin, vmax=vmax)
 
     # Overlay only the POSSUM points that fall inside the cutout footprint
