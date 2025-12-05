@@ -2,7 +2,7 @@ import pandas as pd # type: ignore
 from matplotlib.patches import Rectangle
 
 
-def overlay_groupmembers(ax, csv_path, wcs, header, box_size_arcmin=7.57):
+def overlay_groupmembers(ax, csv_path, wcs, header, box_size_arcmin=7.57, no_text: bool = False):
     """
     Overlay rectangles and labels for group members on a matplotlib axis.
     """
@@ -19,8 +19,10 @@ def overlay_groupmembers(ax, csv_path, wcs, header, box_size_arcmin=7.57):
                          width, height, edgecolor='black', facecolor='none',
                          transform=ax.get_transform('pixel'), linewidth=1)
         ax.add_patch(rect)
+        if no_text:
+            continue
         ax.text(x_pix, y_pix + height,
                 row['Name'], transform=ax.get_transform('pixel'),
                 color='black', fontsize=8, ha='center')
-
+    return
 

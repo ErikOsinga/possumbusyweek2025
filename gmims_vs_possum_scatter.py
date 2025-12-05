@@ -206,7 +206,8 @@ def plot_scatter_rm(possum_rm: np.ndarray,
                     color_label: str = "m2 (rad/m^2)",
                     color_vmin: float | None = None,
                     color_vmax: float | None = None,
-                    color_cmap: str = "viridis"
+                    color_cmap: str = "viridis",
+                    xlabel: str = "rm_gmims (rad/m^2)"
 ) -> Path:
     """
     Top panel: RM_possum vs rm_gmims (inliers only fit; outliers in C1).
@@ -256,6 +257,9 @@ def plot_scatter_rm(possum_rm: np.ndarray,
         ax.plot([lo, hi], [lo, hi], linestyle="--", linewidth=1.2, alpha=0.8,
                 label="1:1", color="k")
 
+        ax.plot([lo, hi], [2*lo, 2*hi], linestyle="--", linewidth=1.2, alpha=0.8,
+                label="2:1", color="r")
+
         # Fit on inliers only
         if np.count_nonzero(inlier) >= 2:
             a, b, r, p = fit_and_corr(x_all[inlier], y_all[inlier])
@@ -302,9 +306,9 @@ def plot_scatter_rm(possum_rm: np.ndarray,
                       transform=ax_resid.transAxes, ha="center", va="center")
 
     # Labels, limits, styles
-    ax.set_xlabel("rm_gmims (rad/m^2)")
+    ax.set_xlabel(xlabel)
     ax.set_ylabel("RM_possum (rad/m^2)")
-    ax.set_title("POSSUM vs GMIMS RM (nearest pixel)")
+    # ax.set_title("POSSUM vs GMIMS RM (nearest pixel)")
     if logscale:
         ax.set_yscale("symlog", linthresh=10.0)
     if rm_lim is not None:
@@ -312,11 +316,14 @@ def plot_scatter_rm(possum_rm: np.ndarray,
         ax_resid.set_ylim(-rm_lim, rm_lim)
     ax.grid(True)
 
-    ax_resid.set_xlabel("rm_gmims (rad/m^2)")
+    ax_resid.axvline(21, color="red", linestyle="--", linewidth=1.0, alpha=0.7,label="Median STAPS RM")
+    ax_resid.set_xlabel(xlabel)
     ax_resid.set_ylabel("Residual: RM_possum - (a x + b) (rad/m^2)")
     ax_resid.set_title("Residuals (inliers only)")
     ax_resid.axhline(0.0, color="k", linestyle="--", linewidth=1.0, alpha=0.7)
     ax_resid.grid(True)
+    ax_resid.legend(loc="upper left", frameon=True,
+                    title=f"Reduced chi² = {chi2_red:.3f} (dof={dof})")
 
     fig.tight_layout()
     outfile = outdir / (outname or "rm_possum_vs_rm_gmims.png")
@@ -474,7 +481,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--radius-deg", type=float,
                help="Angular radius in degrees. If given with --ra and --dec, only sources within this radius are used for ALL plots.")
     p.add_argument("--rmlim", type=float, default=100.0, help="Axis limit for RM scatter plot (default: 100 rad/m^2).")
-
+    p.add_argument("--xlabel", type=str, default="rm_gmims (rad/m^2)",
+                     help="X-axis label for scatter plot (default: 'rm_gmims (rad/m^2)').")
     
     p.add_argument("--inlier-high-pct", type=float, default=90.0,
                    help="Upper percentile for inlier selection in scatter plot (default: 90.0).")
@@ -567,6 +575,7 @@ def main() -> None:
         color_vmin=args.m2_vmin,
         color_vmax=args.m2_vmax,
         color_cmap=args.m2_cmap,
+        xlabel=args.xlabel,
     )
     print(f"Saved scatter: {scatter_file}")
 
