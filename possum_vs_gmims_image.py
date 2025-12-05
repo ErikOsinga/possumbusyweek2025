@@ -95,7 +95,9 @@ def imshow_rm(ax: plt.Axes,
               wcs: WCS,
               vmin: float,
               vmax: float,
-              cmap: str = "RdBu_r") -> None:
+              cmap: str = "RdBu_r",
+              no_cbar: bool = False
+) -> None:
     """Display the STAPS RM image with WCSAxes."""
     im = ax.imshow(img, origin="lower", vmin=vmin, vmax=vmax, cmap=cmap,
                 #    transform=ax.get_transform(wcs), # type: ignore
@@ -103,8 +105,11 @@ def imshow_rm(ax: plt.Axes,
     )
     ax.set_xlabel("RA")
     ax.set_ylabel("Dec")
+    if no_cbar:
+        return
     cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cb.set_label("RM (rad/m^2)")
+    return
 
 
 def scatter_possum(ax: plt.Axes,
@@ -270,6 +275,7 @@ def plot_allsky(staps_path: Path,
 
     ############## MARKER SIZE AND ALPHA #########################################################################################
     markersize = 0.1
+    markersize = 10
     alpha = 1.0
     ############## MARKER SIZE AND ALPHA #########################################################################################
 
@@ -291,7 +297,7 @@ def plot_allsky(staps_path: Path,
     print(f"Plotting Dorado at {RA_DORADO=}, {DEC_DORADO=}")
 
     # Right panel: XRM in RA/Dec using the same WCS projection
-    ax2 = fig1.add_subplot(1, 2, 2, projection=wcs)
+    ax2 = fig1.add_subplot(1, 2, 2, projection=wcs, sharex=ax1, sharey=ax1)
     ax2.set_aspect('equal')
 
     m_xrm = np.isfinite(xrm)
@@ -299,7 +305,7 @@ def plot_allsky(staps_path: Path,
         xrm_good = xrm[m_xrm]
         # Robust color stretch for XRM
         xrm_lo, xrm_hi = np.nanpercentile(xrm_good, [5, 95])
-        xrm_lo, xrm_hi = -2, 2
+        xrm_lo, xrm_hi = -1, 3
         sc2 = ax2.scatter(
             sky_icrs.ra.deg[m_xrm],
             sky_icrs.dec.deg[m_xrm],
@@ -329,9 +335,33 @@ def plot_allsky(staps_path: Path,
     ax2.set_title("XRM (RA-Dec)")
     ax2.grid(True, linestyle=":", alpha=0.5)
 
+
+
     fig1.tight_layout()
     outfile_radec = outdir / f"{base_name}_radec.png"
     fig1.savefig(outfile_radec, dpi=200)
+
+    if False: # for interactive plotting
+        # bottom right corner
+        xlim_low, ylim_low = 195.00, -55.00
+        # top left corner
+        xlim_high, ylim_high = 15*15 , -20.00 # 15d in an hour 
+
+        xlims_world = [xlim_high*u.deg, xlim_low*u.deg] # RA inverted
+        ylims_world = [ylim_low*u.deg, ylim_high*u.deg]
+
+        print(f"Setting limits {xlims_world=}")
+        print(f"Setting limits {ylims_world=}")
+        world_coords = SkyCoord(xlims_world, ylims_world)#, frame=)
+        pixel_coords_x, pixel_coords_y = wcs.world_to_pixel(world_coords)
+
+        ax1.set_xlim(pixel_coords_x)
+        ax1.set_ylim(pixel_coords_y)
+        # ax2.set_xlim()
+        plt.show()
+    # plt.show()
+
+
     plt.close(fig1)
 
     # Galactic figure (both panels in Galactic l, b, Mollweide)
@@ -474,6 +504,105 @@ def plot_cutout(staps_path: Path,
     fig.tight_layout()
     fig.savefig(outfile, dpi=220)
     plt.close(fig)
+
+
+    # -------------------------
+    # Figure 2: XRM overlay on same STAPS cutout
+    # -------------------------
+    # -------------------------
+    # Select POSSUM sources in cutout and compute STAPS RM at those positions
+    # -------------------------
+    sky_all = SkyCoord(
+        ra=np.asarray(possum[ra_col]) * u.deg,
+        dec=np.asarray(possum[dec_col]) * u.deg,
+        frame="icrs",
+    )
+
+    w_cut = cutout.wcs
+    x_all, y_all = w_cut.world_to_pixel(sky_all)
+    xi_all = np.rint(x_all).astype(int)
+    yi_all = np.rint(y_all).astype(int)
+
+    ny, nx = cutout.data.shape
+    inside = (
+        (xi_all >= 0) & (xi_all < nx) &
+        (yi_all >= 0) & (yi_all < ny)
+    )
+
+    possum_in = possum[inside]
+    xi_in = xi_all[inside]
+    yi_in = yi_all[inside]
+
+    # STAPS RM at POSSUM positions inside cutout
+    rm_staps_in = cutout.data[yi_in, xi_in]
+    rm_possum_in = np.asarray(possum_in[rm_col], dtype=float)
+
+    # XRM = RM_possum / RM_staps, with safe handling of zeros and NaNs
+    xrm = np.full_like(rm_possum_in, np.nan, dtype=float)
+    good_xrm = np.isfinite(rm_possum_in) & np.isfinite(rm_staps_in) & (rm_staps_in != 0.0)
+    xrm[good_xrm] = rm_possum_in[good_xrm] / rm_staps_in[good_xrm]
+
+    fig2 = plt.figure(figsize=(6.5, 6.5))
+    ax2 = plt.subplot(projection=cutout.wcs)
+
+    imshow_rm(ax2, cutout.data, cutout.wcs, vmin=vmin, vmax=vmax, no_cbar=True)
+
+    if np.any(np.isfinite(xrm)):
+        # Robust stretch for XRM
+        xrm_good = xrm[np.isfinite(xrm)]
+        xrm_lo, xrm_hi = np.nanpercentile(xrm_good, [5, 95])
+        xrm_lo, xrm_hi = -1, 3
+
+        # Plot only sources with finite XRM
+        sky_in = SkyCoord(
+            ra=np.asarray(possum_in[ra_col]) * u.deg,
+            dec=np.asarray(possum_in[dec_col]) * u.deg,
+            frame="icrs",
+        )
+        mask_plot = np.isfinite(xrm)
+        sc = ax2.scatter(
+            sky_in.ra.deg[mask_plot],
+            sky_in.dec.deg[mask_plot],
+            s=10.0,
+            c=xrm[mask_plot],
+            cmap="rainbow",
+            vmin=xrm_lo,
+            vmax=xrm_hi,
+            alpha=1.0,
+            transform=ax2.get_transform("world"),
+            edgecolors="k",
+            linewidths=0.3,
+        )
+        cb = plt.colorbar(sc, ax=ax2, fraction=0.046, pad=0.04)
+        cb.set_label("XRM = RM_possum / RM_staps")
+    else:
+        ax2.text(
+            0.5,
+            0.5,
+            "No valid XRM values",
+            transform=ax2.transAxes,
+            ha="center",
+            va="center",
+        )
+
+    ax2.set_title(f"XRM on STAPS RM (cutout {width_deg:.2f} deg)")
+    ax2.grid(color="k", alpha=0.2, linestyle=":", linewidth=0.5)
+
+    if objects_csv is not None:
+        futil.overlay_groupmembers(ax2, objects_csv, cutout.wcs, header, box_size_arcmin=7.57, no_text=True)
+
+    if outname.endswith(".png"):
+        xrm_name = outname[:-4] + "_xrm.png"
+    else:
+        xrm_name = outname + "_xrm.png"
+    outfile2 = outdir / xrm_name
+
+    fig2.tight_layout()
+    fig2.savefig(outfile2, dpi=220)
+    plt.close(fig2)
+
+    print(f"Saved cutout XRM figure to: {outfile2}")
+
     return outfile
 
 
