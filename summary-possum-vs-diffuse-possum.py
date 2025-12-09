@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 
 from astropy.io import fits
 from astropy.table import Table
@@ -208,6 +209,8 @@ def plot_one_source(
     image_wcs: WCS,
     peakpi_data: np.ndarray,
     peakpi_wcs: WCS,
+    diffuse_pol_data: np.ndarray | None,
+    diffuse_pol_wcs: WCS | None,
     spectra: Table,
     fdf_table: Table,
     catalog: Table,
@@ -217,6 +220,8 @@ def plot_one_source(
     inner_rad_as: float,
     outer_rad_as: float,
     source_box_size_as: float,
+    diffuse_spectra: Table | None,
+    diffuse_possum_cat: Table | None,
 ):
 
 
@@ -230,14 +235,15 @@ def plot_one_source(
     ra = float(cat_row["ra"])
     dec = float(cat_row["dec"])
     rm = float(cat_row["rm"])  # catalog RM in rad/m^2
+    rm_err = float(cat_row["rm_err"])  # rad/m^2
 
     # Diffuse (off-source) RM and FDF for this source
     diff_cat_row = diffuse_catalog[index]
     diff_rm = float(diff_cat_row["rm"])  # diffuse RM in rad/m^2
+    diff_rm_err = float(diff_cat_row["rm_err"])  # diffuse RM in rad/m^2
 
     diff_fdf_row = diffuse_fdf_table[index]
     phi_diff, fdf_diff_vals = fdf_row_to_arrays(diff_fdf_row)
-
 
     # Use a cutout slightly larger than the outer annulus
     cutout_size_as = outer_rad_as * 2.2
@@ -251,6 +257,13 @@ def plot_one_source(
     cutout_P, cutout_wcs_P = make_cutout(
         peakpi_data, peakpi_wcs, ra, dec, cutout_size_as
     )
+    # Diffuse peak polarized intensity cutout (optional)
+    cutout_diffP = None
+    cutout_wcs_diffP = None
+    if diffuse_pol_data is not None and diffuse_pol_wcs is not None:
+        cutout_diffP, cutout_wcs_diffP = make_cutout(
+            diffuse_pol_data, diffuse_pol_wcs, ra, dec, cutout_size_as
+        )
 
     # Get spectra arrays
     (
@@ -266,12 +279,29 @@ def plot_one_source(
         u_diff,
     ) = spectra_row_to_arrays(spec_row)
 
+
+    if diffuse_spectra is not None:
+        # overwrite the diffuse values from annulus with the diffuse spectra values
+        print("Overwriting annulus spectra with diffuse spectra")
+        diff_spec_row = diffuse_spectra[index]
+        freq_hz_diffuse, i_diff, i_diff_err, q_diff, q_diff_err, u_diff, u_diff_err, _, _, __ = spectra_row_to_arrays(diff_spec_row)
+        
+        Idiffuse_title = "Diffuse I (from STAPS)"
+        
+    else:
+        Idiffuse_title = "Diffuse I (median in annulus)"
+        freq_hz_diffuse = freq_hz # diffuse comes from same dataset
+
     # Faraday dispersion function
     phi, fdf_vals = fdf_row_to_arrays(fdf_row)
 
     # Convert frequencies to lambda^2
     c = const.c.value  # m/s
     lambda_sq = (c / freq_hz) ** 2  # m^2
+    lambda_sq_diff = (c / freq_hz_diffuse)**2 # m^2
+
+    # print(np.min(lambda_sq), np.max(lambda_sq), "POSSUM")
+    # print(np.min(lambda_sq_diff), np.max(lambda_sq_diff), "STAPS")
 
     # Convert intensities to mJy/beam for plotting
     i_src_mjy = i_src * 1000.0
@@ -298,7 +328,6 @@ def plot_one_source(
 
     # Set up the figure layout
     fig = plt.figure(figsize=(10, 6))
-    from matplotlib.gridspec import GridSpec
 
     gs = GridSpec(
         3,
@@ -309,10 +338,15 @@ def plot_one_source(
         wspace=0.6,
     )
 
-    # Left column: top = Stokes I, middle = peak P, bottom left unused
+    # Left column: top = Stokes I, middle = peak P
     ax_img_I = fig.add_subplot(gs[0, 0], projection=cutout_wcs_I)
     ax_img_P = fig.add_subplot(gs[1, 0], projection=cutout_wcs_P)
-
+    # bottom = diffuse polint, if given
+    if cutout_diffP is not None and cutout_wcs_diffP is not None:
+        ax_img_diffP = fig.add_subplot(gs[2, 0], projection=cutout_wcs_diffP)
+    else:
+        ax_img_diffP = fig.add_subplot(gs[2, 0])
+        ax_img_diffP.axis("off")
 
     vmin, vmax = np.percentile(cutout_I, [5, 95])
     # Stokes I image
@@ -362,9 +396,49 @@ def plot_one_source(
     cbar_P = fig.colorbar(im_P, ax=ax_img_P, pad=0.01)
     cbar_P.set_label("Peak P [Jy/beam]")
 
+
+    # Diffuse peak polarized intensity image, if available
+    if cutout_diffP is not None and cutout_wcs_diffP is not None:
+        # 5th–95th percentile stretch
+        vmin, vmax = np.nanpercentile(cutout_diffP, [5.0, 95.0])
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+            vmin = np.nanmin(cutout_diffP)
+            vmax = np.nanmax(cutout_diffP)
+
+        im_diffP = ax_img_diffP.imshow(
+            cutout_diffP,
+            origin="lower",
+            cmap="inferno",
+            interpolation="nearest",
+            vmin=vmin,
+            vmax=vmax,
+        )
+        ax_img_diffP.set_xlabel("RA (J2000)")
+        ax_img_diffP.set_ylabel("Dec (J2000)")
+        ax_img_diffP.set_title("Diffuse peak polarized intensity")
+
+        add_annuli_and_box(
+            ax_img_diffP,
+            cutout_wcs_diffP,
+            inner_rad_as=inner_rad_as,
+            outer_rad_as=outer_rad_as,
+            box_size_as=source_box_size_as,
+        )
+
+        cbar_diffP = fig.colorbar(im_diffP, ax=ax_img_diffP, pad=0.01)
+        cbar_diffP.set_label("Peak PI [K]")
+    else:
+        ax_img_P.set_xlabel("RA (J2000)")
+
+
     # Right-top row: Stokes I spectra (source and diffuse)
     ax_I_src = fig.add_subplot(gs[0, 1])
-    ax_I_diff = fig.add_subplot(gs[0, 2], sharex=ax_I_src, sharey=ax_I_src)
+    if diffuse_spectra is not None:
+        # dont share x or y axis, different units
+        ax_I_diff = fig.add_subplot(gs[0, 2])
+    else:
+        # Can share axis, because diffuse from annulus = same lambda sq coverage
+        ax_I_diff = fig.add_subplot(gs[0, 2], sharex=ax_I_src, sharey=ax_I_src)
 
     ax_I_src.errorbar(
         lambda_sq, i_src_mjy, yerr=i_src_err_mjy, fmt=".", ms=3, capsize=2
@@ -374,13 +448,18 @@ def plot_one_source(
     ax_I_src.set_title("Source I (from box)")
     ax_I_src.grid(True, linestyle=":", linewidth=0.5)
 
-    ax_I_diff.plot(lambda_sq, i_diff_mjy, ".", ms=3, color='C7')
-    ax_I_diff.set_title("Diffuse I (median in annulus)")
+    ax_I_diff.plot(lambda_sq_diff, i_diff_mjy, ".", ms=3, color='C7')
+    ax_I_diff.set_title(Idiffuse_title)
     ax_I_diff.grid(True, linestyle=":", linewidth=0.5)
 
     # Right-middle row: Q, U, P spectra (source and diffuse)
     ax_QU_src = fig.add_subplot(gs[1, 1], sharex=ax_I_src)
-    ax_QU_diff = fig.add_subplot(gs[1, 2], sharex=ax_I_src, sharey=ax_QU_src)
+    if diffuse_spectra is not None:
+        # dont share x or y axis, different units
+        ax_QU_diff = fig.add_subplot(gs[1, 2])
+    else:
+        # Can share axis, because diffuse from annulus = same lambda sq coverage
+        ax_QU_diff = fig.add_subplot(gs[1, 2], sharex=ax_I_src, sharey=ax_QU_src)
 
     ax_QU_src.errorbar(
         lambda_sq,
@@ -420,9 +499,9 @@ def plot_one_source(
     ax_QU_src.legend(fontsize="small", loc="best")
 
     # Diffuse Q, U, P (no errors assumed)
-    ax_QU_diff.plot(lambda_sq, q_diff_mjy, ".", ms=3, label="Q")
-    ax_QU_diff.plot(lambda_sq, u_diff_mjy, ".", ms=3, label="U")
-    ax_QU_diff.plot(lambda_sq, p_diff_mjy, ".", ms=3, label="P", color='k')
+    ax_QU_diff.plot(lambda_sq_diff, q_diff_mjy, ".", ms=3, label="Q")
+    ax_QU_diff.plot(lambda_sq_diff, u_diff_mjy, ".", ms=3, label="U")
+    ax_QU_diff.plot(lambda_sq_diff, p_diff_mjy, ".", ms=3, label="P", color='k')
     ax_QU_diff.set_title("Diffuse Q, U, P")
     ax_QU_diff.grid(True, linestyle=":", linewidth=0.5)
     ax_QU_diff.legend(fontsize="small", loc="best")
@@ -445,7 +524,7 @@ def plot_one_source(
     ax_FDF_src.text(
         0.98,
         0.9,
-        f"RM = {rm:.1f}",
+        f"RM = {rm:.1f} +/- {rm_err:.1f}",
         transform=ax_FDF_src.transAxes,
         ha="right",
         va="top",
@@ -454,24 +533,35 @@ def plot_one_source(
 
     # Diffuse FDF
     ax_FDF_diff.plot(phi_diff, fdf_diff_mjy, "-")
-    ax_FDF_diff.axvline(diff_rm, linestyle="--", linewidth=1.0)
+    ax_FDF_diff.axvline(diff_rm, linestyle="--", linewidth=1.0, label= f"RM = {diff_rm:.1f} +/- {diff_rm_err:.1f}")
     ax_FDF_diff.set_xlabel("Faraday depth phi [rad/m^2]")
     ax_FDF_diff.set_title("Diffuse FDF")
     ax_FDF_diff.grid(True, linestyle=":", linewidth=0.5)
     ax_FDF_diff.set_xlim(-fdflim, fdflim)
 
-    y_max_diff = np.nanmax(fdf_diff_mjy)
-    if np.isfinite(y_max_diff) and y_max_diff > 0.0:
-        ax_FDF_diff.text(
-            0.98,
-            0.9,
-            f"RM = {diff_rm:.1f}",
-            transform=ax_FDF_diff.transAxes,
-            ha="right",
-            va="top",
-            fontsize="small",
-        )
 
+
+    # diffuse POSSUM RM, if given separately
+    if diffuse_possum_cat is not None:
+        diff_possum_rm = diffuse_possum_cat[index]['rm']
+        # print(diffuse_possum_cat)
+        diff_possum_rm_err = diffuse_possum_cat[index]['dPhiPeakPIfit_rm2'] # forgot to change the name
+    
+        ax_FDF_diff.axvline(diff_possum_rm, linestyle="--", linewidth=1.0, color='k', label=f"RM_diff,possum = {diff_possum_rm:.1f} +/- {diff_possum_rm_err:.1f} ")
+
+        ax_FDF_diff.legend(fontsize=8)
+    else:
+        y_max_diff = np.nanmax(fdf_diff_mjy)
+        if np.isfinite(y_max_diff) and y_max_diff > 0.0:
+            ax_FDF_diff.text(
+                0.98,
+                0.9,
+                f"RM = {diff_rm:.1f} +/- {diff_rm_err:.1f}",
+                transform=ax_FDF_diff.transAxes,
+                ha="right",
+                va="top",
+                fontsize="small",
+            )
 
     # Common x-axis label for lambda^2
     ax_QU_src.set_xlabel("lambda^2 [m^2]")
@@ -605,6 +695,33 @@ def parse_args():
         ),
         help="Path to diffuse-emission FDF FITS table.",
     )
+    parser.add_argument(
+        "--diffuse-spectra",
+        dest="diffuse_spectra",
+        default=None,
+        help=(
+            "Optional path to diffuse spectra.fits file. "
+            "If given, will not plot annulus IQU spectra in rightmost plot but this one instead."
+        ),
+    )
+    parser.add_argument(
+        "--diffuse-polint",
+        dest="diffuse_polint",
+        default=None,
+        help=(
+            "Optional path to diffuse peak polarized intensity FITS image. "
+            "If given, a third cutout panel is shown in the left column."
+        ),
+    )
+    parser.add_argument(
+        "--diffuse-possum-cat",
+        dest="diffuse_possum_cat",
+        default=None,
+        help=(
+            "Optional path to POSSUM lowres catalogue "
+            "If given, a diffuse RM from annulus is shown in the diffuse FDF plot"
+        ),
+    )
 
 
     return parser.parse_args()
@@ -632,7 +749,26 @@ def main():
         raise RuntimeError(
             "Diffuse catalog/FDF tables do not match length of main catalog."
         )
+    
+    # optional diffuse spectra fits table
+    diffuse_spectra = None
+    if args.diffuse_spectra is not None:
+        diffuse_spectra = Table.read(args.diffuse_spectra)
+    
+    # Optional diffuse peak polarized intensity image
+    diffuse_pol_data = None
+    diffuse_pol_wcs = None
+    if args.diffuse_polint is not None:
+        diffuse_pol_data, diffuse_pol_wcs, _ = load_image(args.diffuse_polint)
 
+
+    # optional diffuse POSSUM catalogue, for annulus FDF value
+    if args.diffuse_possum_cat is not None:
+        diffuse_possum_cat = Table.read(args.diffuse_possum_cat)
+    else:
+        diffuse_possum_cat = None
+
+        
 
 
     indices = select_sources_by_snr(catalog, args.snr_threshold)
@@ -654,14 +790,14 @@ def main():
 
     for idx in indices:
         print(f"Plotting source index {idx}...")
-    for idx in indices:
-        print(f"Plotting source index {idx}...")
         plot_one_source(
             index=idx,
             image_data=i_image_data,
             image_wcs=i_image_wcs,
             peakpi_data=peakpi_data,
             peakpi_wcs=peakpi_wcs,
+            diffuse_pol_data=diffuse_pol_data,
+            diffuse_pol_wcs=diffuse_pol_wcs,
             spectra=spectra,
             fdf_table=fdf_table,
             catalog=catalog,
@@ -671,7 +807,10 @@ def main():
             inner_rad_as=args.inner_rad_as,
             outer_rad_as=args.outer_rad_as,
             source_box_size_as=args.source_box_size,
+            diffuse_possum_cat=diffuse_possum_cat,
+            diffuse_spectra=diffuse_spectra,
         )
+
 
 
     print(f"Finished. Plots saved in {output_dir}")
