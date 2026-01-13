@@ -36,7 +36,10 @@ from astropy.constants import c as c_light
 
 import matplotlib.pyplot as plt
 
+from faraday_moments import ThresholdConfig, compute_faraday_moments
+
 from RMtools_1D.do_RMsynth_1D import run_rmsynth
+from RMtools_1D.do_RMclean_1D import run_rmclean
 
 
 @dataclass
@@ -115,6 +118,23 @@ class FrequencyGrid:
         lambda_sq = (c_light / freq) ** 2
         return cls(frequency=freq.to(u.Hz), lambda_sq=lambda_sq.to(u.m**2), channel_width=delta_nu.to(u.Hz))
 
+    @classmethod
+    def possum_band1plus2(
+        cls,
+    ) -> "FrequencyGrid":
+        """
+        Create a POSSUM combined band1 + band 2 frequency grid
+
+        Notes
+        -----
+        """
+        freq_band1 = np.linspace(800, 1088, 288) * u.MHz
+        freq_band2 = np.linspace(1296, 1440, 144) * u.MHz
+        freq = np.concatenate([freq_band1,freq_band2])
+        lambda_sq = (c_light / freq) ** 2
+        # Approximate constant channel width
+        channel_width = (freq[1] - freq[0]).to(u.Hz)
+        return cls(frequency=freq.to(u.Hz), lambda_sq=lambda_sq.to(u.m**2), channel_width=channel_width)
 
 @dataclass
 class LOSGrid:
@@ -558,15 +578,100 @@ def _filter_kwargs(kwargs: dict, func) -> dict:
     return {k: v for k, v in kwargs.items() if k in allowed}
 
 
-if __name__ == "__main__":
+def plot_fdfs(
+    case: str,
+    summary_dict: dict,
+    result_dict: dict,
+    clean_summary: dict,
+    clean_result: dict,
+    mgrm: float,
+    m1_dirty: float,
+    m1_clean: float,
+):
+    """
+    Plot dirty and clean FDF using the dictionaries output by RM-tools
+    """
+
+    fdf = np.abs(result_dict['dirtyFDF'])
+    phiarr = result_dict['phiArr_radm2']
+    phi_rmsf = result_dict['phi2Arr_radm2']
+    rmsf = np.abs(result_dict['RMSFArr'])
+
+    fig, axes = plt.subplots(1, 2, figsize=(12,6))
+    plt.sca(axes[0])
+    plt.plot(phi_rmsf[len(phi_rmsf)//4:len(phi_rmsf)//4*3],
+            rmsf[len(phi_rmsf)//4:len(phi_rmsf)//4*3],
+            color='k',alpha=0.5,ls='dashed', label='RMSF'
+    )
+    plt.plot(phiarr, fdf/np.max(fdf), label='FDF')
+    plt.axvline(summary_dict['phiPeakPIfit_rm2'], color='r', ls='dashed', label='peak RM')
+    plt.xlabel("Fdep [rad/m2]")
+    plt.ylabel("FDF (arbitrary)")
+    plt.title(f"Case {case}. Peak RM = {summary_dict['phiPeakPIfit_rm2']:.0f}, sigmaAddC = {summary_dict['sigmaAddC']:.0f}")
+    plt.legend()
+    plt.tight_layout()
+    
+    # rm ratio = full LOS RM divided by the peak RM probed by synchrotron emission
+    rmratio_peak = mgrm / summary_dict['phiPeakPIfit_rm2'] 
+
+    # rm ratio = full LOS RM divided by the first moment RM from the synchrotron emission
+    rmratio_moment = mgrm / m1_clean
+    
+    plt.sca(axes[1])
+    plt.title(f"Clean FDF. RM ratio = {rmratio_moment:.1f}")
+    plt.plot(clean_result['phiArr_radm2'], np.abs(clean_result['cleanFDF']),label='Cleaned FDF')
+    plt.plot(clean_result['phiArr_radm2'], np.abs(clean_result['ccArr']), color='k', label='Clean Components')
+    plt.axvline(clean_summary['phiPeakPIfit_rm2'], color='r', ls='dashed', label='peak RM')
+    plt.axvline(m1_clean, color='green', ls='dashed', label='Clean first moment')
+    plt.xlabel("Fdep [rad/m2]")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f'./plots_toymodels/case{case}.png')
+    plt.show()
+
+
+def get_defaults(setup='lofar'):
     # Simple sanity check: generate all cases with default settings
-    freq_grid = FrequencyGrid.from_limits()  # LOFAR-like default
+    if setup == 'lofar':
+        phiMax_radm2 = 50
+        dPhi_radm2=0.25
+        freq_grid = FrequencyGrid.from_limits()  # LOFAR-like default
+    elif setup == 'possum_band1':
+        phiMax_radm2 = 400
+        dPhi_radm2 = 4
+        freq_grid = FrequencyGrid.from_limits(nu_min_MHz=800, nu_max_MHz=1088, n_channels=288)
+    elif setup == 'possum_band1plus2':
+        phiMax_radm2 = 400
+        dPhi_radm2 = 4
+        freq_grid = FrequencyGrid.possum_band1plus2()
+
+    else:
+        raise NotImplementedError(f"Not implemented {setup=}")
+
+    return phiMax_radm2, dPhi_radm2, freq_grid
+
+
+if __name__ == "__main__":
+    MGRM = 20 # the full LOS RM value assumed. 
+
+    # LOFAR-like default
+    # phiMax_radm2, dPhi_radm2, freq_grid = get_defaults('lofar') 
+
+    # POSSUM band 1 freq grid
+    # phiMax_radm2, dPhi_radm2, freq_grid = get_defaults('possum_band1') 
+    phiMax_radm2, dPhi_radm2, freq_grid = get_defaults('possum_band1plus2') 
+
+
+
+    # compute Faraday moments with a 15% relative peak threshold for inclusion in calculation, Dickey+2019
+    moment_config = ThresholdConfig(relative=0.15, absolute=None,
+                             multi_component=False)
 
     for case in ["A", "B0", "B1", "B2", "C"]:
     # for case in ["A"]:
 
         ####################################### Generate IQU spectra ###############################
-        result = generate_toy_model_spectrum(case, freq_grid=freq_grid)
+        result = generate_toy_model_spectrum(case, freq_grid=freq_grid, mgrm=MGRM)
         freq = result["frequency_Hz"]
         I = result["I"]
         Q = result["Q"]
@@ -584,18 +689,33 @@ if __name__ == "__main__":
         data = [freq, Q, U, np.ones(len(Q))*np.median(Q)*0.1, np.ones(len(U))*np.median(U)*0.1]
         summary_dict, result_dict = run_rmsynth(
             data=data,
-            phiMax_radm2=50,
-            dPhi_radm2=0.25,
+            phiMax_radm2=phiMax_radm2,
+            dPhi_radm2=dPhi_radm2,
             weightType='uniform',
         )
 
+        ####################################### Do RM Clean ####################################
+        clean_summary, clean_result = run_rmclean(summary_dict, result_dict, cutoff=-8)
+
+
+        # Compute moments with a threshold similar to Dickey+2019
+        m0_dirty, m1_dirty, width_dirty = compute_faraday_moments(
+            result_dict['phiArr_radm2'], result_dict['dirtyFDF'], threshold=moment_config
+        ) 
+        # NOTE: CVANECK: "not a fan of computing moments from dirty FDFs"
+        # "because the results are generally very sensitive to the sensitivity threshold you apply."
+
+        m0_clean, m1_clean, width_clean = compute_faraday_moments(
+            clean_result['phiArr_radm2'], clean_result['cleanFDF']
+        )
+
+        print(f"First dirty moment: {m1_dirty:.1f} rad/m2")
+        print(f"First clean moment: {m1_clean:.1f} rad/m2")
+
         ####################################### Plot FDF ####################################
-        fdf = np.abs(result_dict['dirtyFDF'])
-        phiarr = result_dict['phiArr_radm2']
-        plt.plot(phiarr, fdf)
-        plt.axvline(summary_dict['phiPeakPIfit_rm2'], color='k', ls='dashed')
-        plt.xlabel("Fdep [rad/m2]")
-        plt.ylabel("FDF (arbitrary)")
-        plt.title(f"Case {case}. Peak RM = {summary_dict['phiPeakPIfit_rm2']:.0f}, sigmaAddC = {summary_dict['sigmaAddC']:.0f}")
-        plt.tight_layout()
-        plt.show()
+        plot_fdfs(case,
+                  summary_dict, result_dict, clean_summary, clean_result,
+                  mgrm=MGRM,
+                  m1_dirty=m1_dirty,
+                  m1_clean=m1_clean,
+        )

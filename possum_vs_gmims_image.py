@@ -45,6 +45,9 @@ B_DORADO = -43.3928
 RA_DORADO = 65.0025000
 DEC_DORADO = -54.9380556
 
+VMIN_XRM = -0.5
+VMAX_XRM = 2.5
+
 
 # ----------------------------
 # I/O and data prep utilities
@@ -305,7 +308,7 @@ def plot_allsky(staps_path: Path,
         xrm_good = xrm[m_xrm]
         # Robust color stretch for XRM
         xrm_lo, xrm_hi = np.nanpercentile(xrm_good, [5, 95])
-        xrm_lo, xrm_hi = -1, 3
+        xrm_lo, xrm_hi = VMIN_XRM, VMAX_XRM
         sc2 = ax2.scatter(
             sky_icrs.ra.deg[m_xrm],
             sky_icrs.dec.deg[m_xrm],
@@ -406,7 +409,7 @@ def plot_allsky(staps_path: Path,
     if np.count_nonzero(m_xrm) > 0:
         xrm_good = xrm[m_xrm]
         xrm_lo, xrm_hi = np.nanpercentile(xrm_good, [5, 95])
-        xrm_lo, xrm_hi = -2, 2
+        xrm_lo, xrm_hi = VMIN_XRM, VMAX_XRM
         sc2g = ax2g.scatter(
             l_rad[m_xrm],
             b_rad[m_xrm],
@@ -551,7 +554,7 @@ def plot_cutout(staps_path: Path,
         # Robust stretch for XRM
         xrm_good = xrm[np.isfinite(xrm)]
         xrm_lo, xrm_hi = np.nanpercentile(xrm_good, [5, 95])
-        xrm_lo, xrm_hi = -1, 3
+        xrm_lo, xrm_hi = VMIN_XRM, VMAX_XRM
 
         # Plot only sources with finite XRM
         sky_in = SkyCoord(
@@ -602,6 +605,38 @@ def plot_cutout(staps_path: Path,
     plt.close(fig2)
 
     print(f"Saved cutout XRM figure to: {outfile2}")
+
+    if True:
+        ## add another plot for XRM vs DEC & galactic coords
+        plt.scatter(
+            sky_in.dec.deg[mask_plot],
+            xrm[mask_plot],
+            # s=markersize,
+        )
+        plt.grid()
+        plt.xlabel("DEC")
+        plt.ylabel("XRM")
+        plt.show()
+
+        sc = plt.scatter(
+            sky_in.galactic.l[mask_plot],
+            sky_in.galactic.b[mask_plot],
+            # s=10.0,
+            c=xrm[mask_plot],
+            cmap="rainbow",
+            vmin=xrm_lo,
+            vmax=xrm_hi,
+            alpha=1.0,
+            # transform=ax2.get_transform("world"),
+            edgecolors="k",
+            linewidths=0.3,
+        )
+        cb = plt.colorbar(sc, ax=plt.gca(), fraction=0.046, pad=0.04)
+        cb.set_label("XRM = RM_possum / RM_staps")
+        plt.grid()
+        plt.xlabel("Galactic longitude")
+        plt.ylabel("Galactic latitude")
+        plt.show()
 
     return outfile
 
